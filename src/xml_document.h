@@ -24,7 +24,7 @@ public:
 
     // create a new document handle initialized with the
     // given xmlDoc object, intended for use in c++ space
-    static v8::Local<v8::Object> New(xmlDoc* doc);
+    static LIBXMLJS_API v8::Local<v8::Object> New(xmlDoc* doc);
 
     // publicly expose ref functions
     using Nan::ObjectWrap::Ref;
@@ -43,6 +43,7 @@ protected:
     static NAN_METHOD(New);
     static NAN_METHOD(FromHtml);
     static NAN_METHOD(FromXml);
+    static NAN_METHOD(FromXmlAsync);
     static NAN_METHOD(SetDtd);
 
     // document handle methods

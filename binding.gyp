@@ -5,6 +5,8 @@
       'product_extension': 'node',
       'type': 'shared_library',
       'include_dirs': [
+        'vendor/libxml.conf',
+        'vendor/libxml.conf/include',
         'vendor/libxml/include',
         "<!(node -e \"require('nan')\")"
       ],
@@ -63,6 +65,10 @@
         'vendor/libxml/xpath.c',
         'vendor/libxml/xpointer.c'
       ],
+      'defines': [
+        'IN_LIBXMLJS',
+        '_REENTRANT',
+      ],
       'conditions': [
         ['OS=="mac"', {
           # node-gyp 2.x doesn't add this anymore
@@ -73,7 +79,19 @@
               '-undefined dynamic_lookup'
             ],
           },
-        }]
+        }],
+        ['OS=="win"', {
+          'defines': [
+            'HAVE_WIN32_THREADS',
+          ],
+        }, {
+          'defines': [
+            'HAVE_LIBPTHREAD',
+            'HAVE_PTHREAD_H',
+            'HAVE_UNISTD_H',
+            'HAVE_RAND_R',
+          ],
+        }],
       ]
     }
   ]

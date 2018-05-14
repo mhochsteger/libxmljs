@@ -12,40 +12,48 @@
 
 namespace libxmljs {
 
-// ensure destruction at exit time
-// v8 doesn't cleanup its resources
-LibXMLJS LibXMLJS::instance;
-
-// track how much memory libxml2 is using
-int xml_memory_used = 0;
-
 // track how many nodes haven't been freed
 int nodeCount = 0;
 
-// wrapper for xmlMemMalloc to update v8's knowledge of memory used
-// the GC relies on this information
-void* xmlMemMallocWrap(size_t size)
-{
-    void* res = xmlMemMalloc(size);
+bool tlsInitialized = false;
+Nan::nauv_key_t tlsKey;
+bool isAsync = false; // Only set on V8 thread when no workers are running
+int numWorkers = 0; // Only access from V8 thread
+ssize_t memSize = 0; // Mainly for testing
 
-    // no need to udpate memory if we didn't allocate
-    if (!res)
-    {
-        return res;
-    }
+struct memHdr {
+    size_t size;
+    double data;
+};
 
-    const int diff = xmlMemUsed() - xml_memory_used;
-    xml_memory_used += diff;
-    Nan::AdjustExternalMemory(diff);
-    return res;
+#define HDR_SIZE offsetof(memHdr, data)
+
+inline void* hdr2client(memHdr* hdr) {
+    return static_cast<void*>(reinterpret_cast<char*>(hdr) + HDR_SIZE);
 }
 
-// wrapper for xmlMemFree to update v8's knowledge of memory used
-// the GC relies on this information
-void xmlMemFreeWrap(void* p)
-{
-    xmlMemFree(p);
+inline memHdr* client2hdr(void* client) {
+    return reinterpret_cast<memHdr*>(static_cast<char*>(client) - HDR_SIZE);
+}
 
+inline void actuallyAdjustMem(ssize_t diff)
+{
+    memSize += diff;
+    Nan::AdjustExternalMemory(diff);
+}
+
+void adjustMem(ssize_t diff)
+{
+    if (isAsync)
+    {
+        WorkerSentinel* worker =
+            static_cast<WorkerSentinel*>(Nan::nauv_key_get(&tlsKey));
+        if (worker)
+        {
+            worker->parent.memAdjustments += diff;
+            return;
+        }
+    }
     // if v8 is no longer running, don't try to adjust memory
     // this happens when the v8 vm is shutdown and the program is exiting
     // our cleanup routines for libxml will be called (freeing memory)
@@ -60,52 +68,89 @@ void xmlMemFreeWrap(void* p)
 #elif (NODE_MODULE_VERSION > 0x000B)
     if (v8::Isolate::GetCurrent() == 0)
     {
+        assert(diff <= 0);
         return;
     }
 #else
     if (v8::V8::IsDead())
     {
+        assert(diff <= 0);
         return;
     }
 #endif
-
-    const int diff = xmlMemUsed() - xml_memory_used;
-    xml_memory_used += diff;
-    Nan::AdjustExternalMemory(diff);
+    actuallyAdjustMem(diff);
 }
 
-// wrapper for xmlMemRealloc to update v8's knowledge of memory used
-void* xmlMemReallocWrap(void* ptr, size_t size)
+void* memMalloc(size_t size)
 {
-    void* res = xmlMemRealloc(ptr, size);
+    size_t totalSize = size + HDR_SIZE;
+    memHdr* mem = static_cast<memHdr*>(malloc(totalSize));
+    if (!mem) return NULL;
+    mem->size = size;
+    adjustMem(totalSize);
+    return hdr2client(mem);
+}
 
-    // if realloc fails, no need to update v8 memory state
-    if (!res)
-    {
-        return res;
-    }
+void memFree(void* p)
+{
+    if (!p) return;
+    memHdr* mem = client2hdr(p);
+    ssize_t totalSize = mem->size + HDR_SIZE;
+    adjustMem(-totalSize);
+    free(mem);
+}
 
-    const int diff = xmlMemUsed() - xml_memory_used;
-    xml_memory_used += diff;
-    Nan::AdjustExternalMemory(diff);
+void* memRealloc(void* ptr, size_t size)
+{
+    if (!ptr) return memMalloc(size);
+    memHdr* mem1 = client2hdr(ptr);
+    ssize_t oldSize = mem1->size;
+    memHdr* mem2 = static_cast<memHdr*>(realloc(mem1, size + HDR_SIZE));
+    if (!mem2) return NULL;
+    mem2->size = size;
+    adjustMem(ssize_t(size) - oldSize);
+    return hdr2client(mem2);
+}
+
+char* memStrdup(const char* str)
+{
+    size_t size = strlen(str) + 1;
+    char* res = static_cast<char*>(memMalloc(size));
+    if (res) memcpy(res, str, size);
     return res;
 }
 
-// wrapper for xmlMemoryStrdupWrap to update v8's knowledge of memory used
-char* xmlMemoryStrdupWrap(const char* str)
-{
-    char* res = xmlMemoryStrdup(str);
-
-    // if strdup fails, no need to update v8 memory state
-    if (!res)
+// Set up in V8 thread
+WorkerParent::WorkerParent() : memAdjustments(0) {
+    if (!tlsInitialized)
     {
-        return res;
+        Nan::nauv_key_create(&tlsKey);
+        tlsInitialized = true;
     }
+    if (numWorkers++ == 0)
+    {
+        isAsync = true;
+    }
+}
 
-    const int diff = xmlMemUsed() - xml_memory_used;
-    xml_memory_used += diff;
-    Nan::AdjustExternalMemory(diff);
-    return res;
+// Tear down in V8 thread
+WorkerParent::~WorkerParent() {
+    actuallyAdjustMem(memAdjustments);
+    if (--numWorkers == 0)
+    {
+        isAsync = false;
+    }
+}
+
+// Set up in worker thread
+WorkerSentinel::WorkerSentinel(WorkerParent& parent) : parent(parent) {
+    Nan::nauv_key_set(&tlsKey, this);
+    xmlMemSetup(memFree, memMalloc, memRealloc, memStrdup);
+}
+
+// Tear down in worker thread
+WorkerSentinel::~WorkerSentinel() {
+    Nan::nauv_key_set(&tlsKey, NULL);
 }
 
 void deregisterNsList(xmlNs* ns)
@@ -170,6 +215,10 @@ void xmlRegisterNodeCallback(xmlNode* xml_obj)
     nodeCount++;
 }
 
+// ensure destruction at exit time
+// v8 doesn't cleanup its resources
+LibXMLJS LibXMLJS::instance;
+
 LibXMLJS::LibXMLJS()
 {
     // set the callback for when a node is created
@@ -178,16 +227,11 @@ LibXMLJS::LibXMLJS()
     // set the callback for when a node is about to be freed
     xmlDeregisterNodeDefault(xmlDeregisterNodeCallback);
 
-    // populated debugMemSize (see xmlmemory.h/c) and makes the call to
-    // xmlMemUsed work, this must happen first!
-    xmlMemSetup(xmlMemFreeWrap, xmlMemMallocWrap,
-            xmlMemReallocWrap, xmlMemoryStrdupWrap);
+    // Setup our own memory handling (see xmlmemory.h/c)
+    xmlMemSetup(memFree, memMalloc, memRealloc, memStrdup);
 
     // initialize libxml
     LIBXML_TEST_VERSION;
-
-    // initial memory usage
-    xml_memory_used = xmlMemUsed();
 }
 
 LibXMLJS::~LibXMLJS()
@@ -240,7 +284,7 @@ v8::Local<v8::Object> listFeatures() {
 NAN_METHOD(XmlMemUsed)
 {
   Nan::HandleScope scope;
-  return info.GetReturnValue().Set(Nan::New<v8::Int32>(xmlMemUsed()));
+  return info.GetReturnValue().Set(Nan::New<v8::Int32>(int32_t(memSize)));
 }
 
 NAN_METHOD(XmlNodeCount)

@@ -3,7 +3,7 @@ environment:
   gyp_version: latest
   pre_gyp_version: latest
   github_release_token:
-    secure: en/UnoFHA3RsSAHM5c6zb3RAMa4V01lC3pYG1YrHSeOPFu78SUA/0lOjNe3pp8RG
+    secure: rI8VrSUANI+Slubd7OIzW6YNSyEmnAEpl2EYsN+CtXYcup4svkPQnqwWM2J70FPM
   matrix:
     - nodejs_version: 0.10
       npm_version: 4.0.3
@@ -44,6 +44,8 @@ install:
   - npm config set -g cafile=package.json
   - npm config set -g strict-ssl=false
   - npm config set registry http://registry.npmjs.org/
+
+  - git submodule update --init --recursive
 
 build_script:
   - npm install --msvs_version=2015
