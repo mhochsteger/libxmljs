@@ -1,28 +1,30 @@
 {
-  "name": "libxmljs",
+  "name": "libxmljs-mt",
   "author": "Marco Rogers",
   "contributors": [
-    "Jeff Smick"
+    "Jeff Smick",
+    "Roman Shtylman",
+    "Martin von Gagern <Martin.vGagern@gmx.net>"
   ],
   "binary": {
-    "module_name": "xmljs",
-    "module_path": "./build/Release/",
-    "host": "https://github.com",
-    "remote_path": "./libxmljs/libxmljs/releases/download/v{version}/",
-    "package_name": "{node_abi}-{platform}-{arch}.tar.gz"
+        "module_name" : "xmljs",
+        "module_path" : "./build/Release/",
+        "host"        : "https://github.com",
+        "remote_path" : "./gagern/libxmljs/releases/download/v{version}-mt/",
+        "package_name": "{node_abi}-{platform}-{arch}.tar.gz"
   },
-  "description": "libxml bindings for v8 javascript engine",
-  "version": "0.18.8",
+  "description": "multi-threaded libxml bindings for v8 javascript engine",
+  "version": "0.18.3",
   "scripts": {
     "install": "node-pre-gyp install --fallback-to-build --loglevel http",
     "test": "node --expose_gc ./node_modules/.bin/nodeunit test"
   },
   "repository": {
     "type": "git",
-    "url": "http://github.com/libxmljs/libxmljs.git"
+    "url": "http://github.com/gagern/libxmljs.git"
   },
   "bugs": {
-    "url": "http://github.com/libxmljs/libxmljs/issues"
+    "url": "http://github.com/gagern/libxmljs/issues"
   },
   "main": "./index",
   "license": "MIT",
